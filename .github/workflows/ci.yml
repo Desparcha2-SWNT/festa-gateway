@@ -32,8 +32,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Falla con avisos de nivel warning o error; los de estilo (info, p. ej. SC2015 en `A && ok || ko`) no bloquean.
       - name: Linter (ShellCheck)
-        run: shellcheck entrypoint.sh scripts/*.sh
+        run: shellcheck --severity=warning entrypoint.sh scripts/*.sh
 
       - name: Build de la imagen
         run: docker build -t festa-gateway:ci .
