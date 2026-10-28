@@ -1,0 +1,69 @@
+# CI de festa-gateway (SCRUM-44).
+# 1) Escaneo de secretos, vulnerabilidades y configuración (Trivy): workflow reutilizable de la organización.
+# 2) Linter de los scripts (ShellCheck), build de la imagen, validación de la configuración de Kong
+#    y pruebas de humo de seguridad contra el gateway corriendo.
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  seguridad:
+    uses: Desparcha2-SWNT/.github/.github/workflows/ci-reusable.yml@main
+    # El workflow llamado no puede pedir más permisos que este job (su job de CodeQL pide security-events).
+    # CodeQL queda apagado: aquí no hay código en un lenguaje que analice, solo configuración y shell.
+    permissions:
+      contents: read
+      security-events: write
+
+  gateway:
+    name: Linter, build y pruebas de humo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linter (ShellCheck)
+        run: shellcheck entrypoint.sh scripts/*.sh
+
+      - name: Build de la imagen
+        run: docker build -t festa-gateway:ci .
+
+      # Llaves desechables solo para el CI: la pública va al gateway y con la privada se firma un JWT válido.
+      - name: Generar llaves JWT de prueba
+        run: |
+          mkdir -p .ci
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out .ci/jwt_private.pem
+          openssl pkey -in .ci/jwt_private.pem -pubout -out .ci/jwt_public.pem
+          chmod 644 .ci/jwt_public.pem
+
+      # El entrypoint renderiza la plantilla y corre `kong config parse`; si la configuración es inválida, falla aquí.
+      - name: Validar la configuración de Kong
+        run: docker run --rm -v "$PWD/.ci/jwt_public.pem:/run/secrets/jwt_public.pem:ro" festa-gateway:ci kong version
+
+      - name: Levantar el gateway
+        run: |
+          docker run -d --name gw -p 8000:8000 -p 8100:8100 \
+            -v "$PWD/.ci/jwt_public.pem:/run/secrets/jwt_public.pem:ro" festa-gateway:ci
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:8100/status > /dev/null && exit 0
+            sleep 2
+          done
+          docker logs gw
+          exit 1
+
+      - name: Pruebas de humo
+        run: ./scripts/ci-smoke.sh .ci/jwt_private.pem
+
+      - name: Logs del gateway
+        if: failure()
+        run: docker logs gw || true
