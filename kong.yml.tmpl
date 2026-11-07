@@ -1,0 +1,217 @@
+# Configuración declarativa de Kong (DB-less) para Festa.
+# Es una plantilla: entrypoint.sh inserta la llave pública de auth-service en `rsa_public_key`
+# y escribe el resultado en /tmp/kong.yml al arrancar.
+#
+# Convención de rutas:
+#   cliente  →  /api/<servicio>/...   (con JWT salvo lo marcado como público)
+#   upstream →  /<servicio>/...       (el plugin global pre-function quita el prefijo /api)
+# /health y /metrics de los servicios quedan fuera del gateway porque no empiezan por /api.
+
+_format_version: "3.0"
+_transform: true
+
+# ---------------------------------------------------------------- JWT
+# Un único consumer representa al emisor de tokens (auth-service). Kong busca la credencial por el claim
+# `iss` y verifica la firma RS256 y `exp`. La identidad del usuario (sub, role) la leen los servicios del
+# mismo JWT, que vuelven a verificar (defensa en profundidad).
+consumers:
+  - username: festa-auth
+    jwt_secrets:
+      - key: festa-auth
+        algorithm: RS256
+        rsa_public_key: __JWT_PUBLIC_KEY__
+
+# ---------------------------------------------------------------- plugins globales
+plugins:
+  # Quita /api del path hacia el upstream: /api/auth/login → /auth/login. Corre antes que cualquier otro plugin.
+  - name: pre-function
+    config:
+      access:
+        - |
+          local path = kong.request.get_path()
+          if path:sub(1, 5) == "/api/" then
+            kong.service.request.set_path(path:sub(5))
+          end
+
+  # Id de correlación para logs y mensajes (los servicios lo leen y lo propagan en el sobre de RabbitMQ).
+  - name: correlation-id
+    config:
+      header_name: X-Correlation-ID
+      generator: uuid
+      echo_downstream: true
+
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
+      upstream_health_metrics: true
+
+  # Ningún endpoint de Festa recibe más de 1 MB (las imágenes irán a almacenamiento externo).
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 1
+      size_unit: megabytes
+
+  # Límite global por IP, holgado: en la ECI muchos estudiantes salen por la misma IP pública (NAT).
+  - name: rate-limiting
+    config:
+      minute: 600
+      limit_by: ip
+      policy: local
+      fault_tolerant: true
+      hide_client_headers: false
+
+  # Encabezados de seguridad en todas las respuestas.
+  - name: response-transformer
+    config:
+      add:
+        headers:
+          - "Strict-Transport-Security:max-age=31536000"
+          - "X-Content-Type-Options:nosniff"
+          - "X-Frame-Options:DENY"
+          - "Referrer-Policy:no-referrer"
+      remove:
+        headers:
+          - "X-Powered-By"
+
+  # Solo para Flutter web en desarrollo; la app móvil no usa CORS.
+  - name: cors
+    config:
+      origins: ["*"]
+      methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+      headers: [Authorization, Content-Type, X-Correlation-ID, Idempotency-Key]
+      exposed_headers: [X-Correlation-ID, RateLimit-Remaining, Retry-After]
+      max_age: 3600
+
+# ---------------------------------------------------------------- servicios y rutas
+# Rutas autenticadas: JWT + rate limit por token (≈ por usuario, sin castigar a quienes comparten IP).
+services:
+  # ---------------- auth (RF1)
+  - name: auth-service
+    url: http://auth-service:8081
+    connect_timeout: 5000
+    read_timeout: 15000
+    routes:
+      # Público: register, login, google, refresh, logout. Límite estricto por IP contra fuerza bruta
+      # (auth-service además bloquea la cuenta tras 5 intentos fallidos).
+      - name: auth-public
+        paths: [/api/auth]
+        methods: [POST, OPTIONS]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config: { minute: 30, hour: 300, limit_by: ip, policy: local, fault_tolerant: true }
+      # Prefijos más largos ganan: estos exigen JWT.
+      - name: auth-private
+        paths: [/api/auth/me, /api/auth/admin]
+        strip_path: false
+        plugins:
+          - name: jwt
+            config: &jwt
+              key_claim_name: iss
+              claims_to_verify: [exp]
+              maximum_expiration: 3600
+              header_names: [authorization]
+              uri_param_names: []
+              cookie_names: []
+          - name: rate-limiting
+            config: &per_user
+              minute: 120
+              limit_by: header
+              header_name: Authorization
+              policy: local
+              fault_tolerant: true
+
+  # ---------------- user (RF2, RF3, RF14)
+  - name: user-service
+    url: http://user-service:8082
+    routes:
+      - name: users
+        paths: [/api/users, /api/merchants, /api/reports]
+        strip_path: false
+        plugins:
+          - { name: jwt, config: *jwt }
+          - { name: rate-limiting, config: *per_user }
+
+  # ---------------- event (RF4, RF5, RF6, RF19)
+  - name: event-service
+    url: http://event-service:8083
+    routes:
+      - name: events
+        paths: [/api/events]
+        strip_path: false
+        plugins:
+          - { name: jwt, config: *jwt }
+          # El mapa pide eventos al moverse: límite más alto.
+          - name: rate-limiting
+            config: { minute: 300, limit_by: header, header_name: Authorization, policy: local, fault_tolerant: true }
+
+  # ---------------- booking (RF7, RF10)
+  - name: booking-service
+    url: http://booking-service:8084
+    routes:
+      - name: bookings
+        paths: [/api/bookings]
+        strip_path: false
+        plugins:
+          - { name: jwt, config: *jwt }
+          # Escanear QR en la entrada de un evento lleno genera ráfagas.
+          - name: rate-limiting
+            config: { minute: 300, limit_by: header, header_name: Authorization, policy: local, fault_tolerant: true }
+
+  # ---------------- payment (RF11)
+  - name: payment-service
+    url: http://payment-service:8085
+    routes:
+      - name: payments
+        paths: [/api/payments]
+        strip_path: false
+        plugins:
+          - { name: jwt, config: *jwt }
+          - name: rate-limiting
+            config: { minute: 30, limit_by: header, header_name: Authorization, policy: local, fault_tolerant: true }
+      # Webhook de Wompi: público, payment-service verifica la firma del evento.
+      - name: wompi-webhook
+        paths: [/webhooks/wompi]
+        methods: [POST]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config: { minute: 120, limit_by: ip, policy: local, fault_tolerant: true }
+
+  # ---------------- ai (RF8, RF9)
+  # Tope grueso por token; el límite fino (5–20/min por usuario, RNF8) lo aplica ai-service con Redis.
+  - name: ai-service
+    url: http://ai-service:8086
+    read_timeout: 60000
+    routes:
+      - name: ai
+        paths: [/api/ai]
+        strip_path: false
+        plugins:
+          - { name: jwt, config: *jwt }
+          - name: rate-limiting
+            config: { minute: 30, limit_by: header, header_name: Authorization, policy: local, fault_tolerant: true }
+
+  # ---------------- notification (RF12)
+  - name: notification-service
+    url: http://notification-service:8087
+    routes:
+      - name: notifications
+        paths: [/api/notifications]
+        strip_path: false
+        plugins:
+          - { name: jwt, config: *jwt }
+          - { name: rate-limiting, config: *per_user }
+
+  # ---------------- analytics (RF15)
+  - name: analytics-service
+    url: http://analytics-service:8088
+    routes:
+      - name: analytics
+        paths: [/api/analytics]
+        strip_path: false
+        plugins:
+          - { name: jwt, config: *jwt }
+          - { name: rate-limiting, config: *per_user }
