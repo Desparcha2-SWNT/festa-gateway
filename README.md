@@ -35,7 +35,22 @@ Los `/health` y `/metrics` de los servicios **no** pasan por el gateway, porque 
 
 - **Quién lo emite:** auth-service, con RS256.
 - **Cómo lo verifica Kong:** busca la credencial por el claim `iss` (= `festa-auth`) y comprueba la firma y `exp`. Además rechaza tokens que duren más de 1 h.
-- **De dónde sale la llave pública:** el contenedor monta `festa-infra/secrets/jwt_public.pem`. Al arrancar, `entrypoint.sh` la inserta en la plantilla, valida el resultado con `kong config parse` y solo entonces arranca Kong. Si la llave no está, el contenedor no arranca.
+- **De dónde sale la llave pública:** en local, el contenedor monta `festa-infra/secrets/jwt_public.pem`. En AWS (ECS Fargate no monta archivos) llega como texto PEM en la variable `JWT_PUBLIC_KEY`, que gana sobre el archivo. Al arrancar, `entrypoint.sh` la inserta en la plantilla, valida el resultado con `kong config parse` y solo entonces arranca Kong. Si la llave no está, el contenedor no arranca.
+
+## URLs de los servicios
+
+`kong.yml.tmpl` no tiene las URLs fijas: `entrypoint.sh` reemplaza cada `__<SERVICIO>_SERVICE_URL__` por la variable de entorno del mismo nombre. Si una variable no viene, se usa el nombre del contenedor en el Docker Compose de festa-infra (`http://auth-service:8081`, `http://user-service:8082`, …), así que en local no hay que configurar nada. En AWS se pasan las del balanceador interno, porque el Learner Lab no permite Cloud Map y ECS no resuelve los servicios por nombre (SCRUM-134). Una URL vacía o que no empiece por `http://` o `https://` impide el arranque.
+
+| Variable | Valor por defecto |
+|---|---|
+| `AUTH_SERVICE_URL` | `http://auth-service:8081` |
+| `USER_SERVICE_URL` | `http://user-service:8082` |
+| `EVENT_SERVICE_URL` | `http://event-service:8083` |
+| `BOOKING_SERVICE_URL` | `http://booking-service:8084` |
+| `PAYMENT_SERVICE_URL` | `http://payment-service:8085` |
+| `AI_SERVICE_URL` | `http://ai-service:8086` |
+| `NOTIFICATION_SERVICE_URL` | `http://notification-service:8087` |
+| `ANALYTICS_SERVICE_URL` | `http://analytics-service:8088` |
 - **Qué pasa después:** Kong solo deja pasar tokens auténticos. Cada servicio vuelve a verificar el JWT y lee `sub` y `role` de él para autorizar (defensa en profundidad).
 - **Respuestas de Kong:** los 401 y 429 que genera Kong traen `{"message": "..."}`, no el formato de error de los servicios. La app debe guiarse por el **código de estado**.
 

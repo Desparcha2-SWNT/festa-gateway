@@ -1,5 +1,6 @@
 # Configuración declarativa de Kong (DB-less) para Festa.
-# Es una plantilla: entrypoint.sh inserta la llave pública de auth-service en `rsa_public_key`
+# Es una plantilla: entrypoint.sh inserta la llave pública de auth-service en `rsa_public_key`, reemplaza
+# cada `__<SERVICIO>_SERVICE_URL__` por su URL (variables de entorno, ver README)
 # y escribe el resultado en /tmp/kong.yml al arrancar.
 #
 # Convención de rutas:
@@ -89,7 +90,7 @@ plugins:
 services:
   # ---------------- auth (RF1)
   - name: auth-service
-    url: http://auth-service:8081
+    url: __AUTH_SERVICE_URL__
     connect_timeout: 5000
     read_timeout: 15000
     routes:
@@ -125,7 +126,7 @@ services:
 
   # ---------------- user (RF2, RF3, RF14)
   - name: user-service
-    url: http://user-service:8082
+    url: __USER_SERVICE_URL__
     routes:
       - name: users
         paths: [/api/users, /api/merchants, /api/reports]
@@ -136,7 +137,7 @@ services:
 
   # ---------------- event (RF4, RF5, RF6, RF19)
   - name: event-service
-    url: http://event-service:8083
+    url: __EVENT_SERVICE_URL__
     routes:
       - name: events
         paths: [/api/events]
@@ -149,7 +150,7 @@ services:
 
   # ---------------- booking (RF7, RF10)
   - name: booking-service
-    url: http://booking-service:8084
+    url: __BOOKING_SERVICE_URL__
     routes:
       - name: bookings
         paths: [/api/bookings]
@@ -162,7 +163,7 @@ services:
 
   # ---------------- payment (RF11)
   - name: payment-service
-    url: http://payment-service:8085
+    url: __PAYMENT_SERVICE_URL__
     routes:
       - name: payments
         paths: [/api/payments]
@@ -183,7 +184,7 @@ services:
   # ---------------- ai (RF8, RF9)
   # Tope grueso por token; el límite fino (5–20/min por usuario, RNF8) lo aplica ai-service con Redis.
   - name: ai-service
-    url: http://ai-service:8086
+    url: __AI_SERVICE_URL__
     read_timeout: 60000
     routes:
       - name: ai
@@ -196,7 +197,7 @@ services:
 
   # ---------------- notification (RF12)
   - name: notification-service
-    url: http://notification-service:8087
+    url: __NOTIFICATION_SERVICE_URL__
     routes:
       - name: notifications
         paths: [/api/notifications]
@@ -207,7 +208,7 @@ services:
 
   # ---------------- analytics (RF15)
   - name: analytics-service
-    url: http://analytics-service:8088
+    url: __ANALYTICS_SERVICE_URL__
     routes:
       - name: analytics
         paths: [/api/analytics]

@@ -54,6 +54,19 @@ jobs:
       - name: Validar la configuración de Kong
         run: docker run --rm -v "$PWD/.ci/jwt_public.pem:/run/secrets/jwt_public.pem:ro" festa-gateway:ci kong version
 
+      # Como en ECS Fargate (SCRUM-134): la llave llega por variable de entorno y las URLs de los servicios se
+      # reemplazan por las del balanceador interno. Una URL inválida debe impedir el arranque.
+      - name: Validar la configuración por variables de entorno
+        run: |
+          docker run --rm -e JWT_PUBLIC_KEY="$(cat .ci/jwt_public.pem)" \
+            -e AUTH_SERVICE_URL=http://interno.example:8081 festa-gateway:ci cat /tmp/kong.yml > .ci/kong-env.yml
+          grep -q 'url: http://interno.example:8081' .ci/kong-env.yml
+          grep -q 'url: http://user-service:8082' .ci/kong-env.yml
+          grep -q 'BEGIN PUBLIC KEY' .ci/kong-env.yml
+          if docker run --rm -e JWT_PUBLIC_KEY="$(cat .ci/jwt_public.pem)" -e USER_SERVICE_URL=nada festa-gateway:ci kong version; then
+            echo "::error::El gateway arrancó con una URL inválida"; exit 1
+          fi
+
       - name: Levantar el gateway
         run: |
           docker run -d --name gw -p 8000:8000 -p 8100:8100 \
