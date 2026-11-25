@@ -47,6 +47,13 @@ done
 ok "/health y /metrics de los servicios no se exponen"
 
 [ "$(req -k "$GWS/api/auth/me" -H "Authorization: Bearer $TOKEN")" = 200 ] && ok "HTTPS 8443 (certificado autofirmado) → 200" || fail "https"
+# SCRUM-48: solo TLS 1.3.
+# Éxito = el handshake con esa versión se completó con un cifrado real (no "Cipher is (NONE)").
+tls() { echo | openssl s_client -connect localhost:8443 "-$1" 2>/dev/null | grep -qE "^New, TLSv1\.[0-9], Cipher is [A-Z]"; }
+if command -v openssl >/dev/null; then
+  tls tls1_3 && ok "HTTPS negocia TLS 1.3" || fail "TLS 1.3 no disponible"
+  tls tls1_2 && fail "Kong todavía acepta TLS 1.2" || ok "HTTPS rechaza TLS 1.2"
+fi
 
 [ "$(req http://localhost:8100/metrics)" = 200 ] && grep -q kong_http_requests_total /tmp/gw_body && ok "métricas de Kong en :8100/metrics" || fail "metrics"
 
