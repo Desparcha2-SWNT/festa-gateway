@@ -15,7 +15,7 @@ header() { grep -i "^$1:" /tmp/gw_headers | head -1 | cut -d' ' -f2- | tr -d '\r
 echo "gateway en $GW"
 
 code=$(req -X POST "$GW/api/auth/register" -H 'content-type: application/json' -H 'X-Correlation-ID: smoke-gw-1' \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"clave1234\",\"displayName\":\"Gateway Smoke\",\"accountType\":\"user\"}")
+  -d "{\"email\":\"$EMAIL\",\"password\":\"clave1234\",\"displayName\":\"Gateway Smoke\",\"accountType\":\"user\",\"acceptedPrivacyPolicy\":true}")
 [ "$code" = 201 ] && ok "POST /api/auth/register (público) → 201" || fail "register $code"
 TOKEN=$(json o.accessToken < /tmp/gw_body)
 [ "$(header X-Correlation-ID)" = smoke-gw-1 ] && ok "X-Correlation-ID se respeta y vuelve al cliente" || fail "correlation id"
