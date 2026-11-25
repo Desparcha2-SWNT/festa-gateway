@@ -81,6 +81,19 @@ jobs:
       - name: Pruebas de humo
         run: ./scripts/ci-smoke.sh .ci/jwt_private.pem
 
+      # La app pide el mapa con la ubicación en la consulta (lat, lng): el log de acceso no debe guardarla (RNF5).
+      - name: El log de acceso no guarda la consulta
+        run: |
+          curl -s -o /dev/null 'http://localhost:8000/api/events/clusters?lat=4.7826&lng=-74.0423'
+          sleep 1
+          docker logs gw 2>/dev/null > .ci/access.log
+          if ! grep -F '"GET /api/events/clusters HTTP/' .ci/access.log; then
+            echo '::error::la petición no quedó en el log de acceso'; cat .ci/access.log; exit 1
+          fi
+          if grep -E 'lat=|lng=' .ci/access.log; then
+            echo '::error::el log de acceso guarda la consulta'; exit 1
+          fi
+
       - name: Logs del gateway
         if: failure()
         run: docker logs gw || true
