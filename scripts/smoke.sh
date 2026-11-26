@@ -15,7 +15,7 @@ header() { grep -i "^$1:" /tmp/gw_headers | head -1 | cut -d' ' -f2- | tr -d '\r
 echo "gateway en $GW"
 
 code=$(req -X POST "$GW/api/auth/register" -H 'content-type: application/json' -H 'X-Correlation-ID: smoke-gw-1' \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"clave1234\",\"displayName\":\"Gateway Smoke\",\"accountType\":\"user\"}")
+  -d "{\"email\":\"$EMAIL\",\"password\":\"clave1234\",\"displayName\":\"Gateway Smoke\",\"accountType\":\"user\",\"acceptedPrivacyPolicy\":true}")
 [ "$code" = 201 ] && ok "POST /api/auth/register (público) → 201" || fail "register $code"
 TOKEN=$(json o.accessToken < /tmp/gw_body)
 [ "$(header X-Correlation-ID)" = smoke-gw-1 ] && ok "X-Correlation-ID se respeta y vuelve al cliente" || fail "correlation id"
@@ -47,6 +47,13 @@ done
 ok "/health y /metrics de los servicios no se exponen"
 
 [ "$(req -k "$GWS/api/auth/me" -H "Authorization: Bearer $TOKEN")" = 200 ] && ok "HTTPS 8443 (certificado autofirmado) → 200" || fail "https"
+# SCRUM-48: solo TLS 1.3.
+# Éxito = el handshake con esa versión se completó con un cifrado real (no "Cipher is (NONE)").
+tls() { echo | openssl s_client -connect localhost:8443 "-$1" 2>/dev/null | grep -qE "^New, TLSv1\.[0-9], Cipher is [A-Z]"; }
+if command -v openssl >/dev/null; then
+  tls tls1_3 && ok "HTTPS negocia TLS 1.3" || fail "TLS 1.3 no disponible"
+  tls tls1_2 && fail "Kong todavía acepta TLS 1.2" || ok "HTTPS rechaza TLS 1.2"
+fi
 
 [ "$(req http://localhost:8100/metrics)" = 200 ] && grep -q kong_http_requests_total /tmp/gw_body && ok "métricas de Kong en :8100/metrics" || fail "metrics"
 
